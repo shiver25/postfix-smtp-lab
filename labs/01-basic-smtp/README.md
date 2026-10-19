@@ -1,8 +1,14 @@
-# Postfix Lab — lekcja 1: dwa serwery, kolejki i SMTP
+[English](README.md) | [Polski](README.pl.md)
 
-Laboratorium do świadomej nauki Postfixa. **Bez Dovecota, TLS, SASL i publicznego SMTP** na tym etapie. Zaczynamy od dwóch serwerów oraz pytania: *kto przechowuje wiadomość, gdy odbiorca jest niedostępny?*
+# Postfix Lab — Lesson 1: Two Servers, Mail Queues, and SMTP
 
-## Architektura
+A hands-on laboratory for understanding how Postfix works. At this stage, **there is no Dovecot, TLS, SASL, or public SMTP access**.
+
+We start with two mail servers and one fundamental question:
+
+**Who holds a message when the destination server is unavailable?**
+
+## Architecture
 
 ```text
  [mail-a] --SMTP TCP/25--> [mail-b] --> local(8) --> /var/mail/student
@@ -10,55 +16,76 @@ Laboratorium do świadomej nauki Postfixa. **Bez Dovecota, TLS, SASL i publiczne
  queue-a                   queue-b
 
 Docker network: mail-lab (internal: true)
-Brak mapowania portów kontenerów na hosta.
+No container ports are published to the host.
 ```
 
-- **mail-a**: nadawca. `relayhost = [mail-b]:25` kieruje każdą wiadomość do domen spoza `mydestination` do `mail-b`; nawiasy kwadratowe wyłączają wyszukiwanie MX dla next-hop.
-- **mail-b**: odbiorca. `b.lab.test` jest w `mydestination`; doręczenie do lokalnego konta systemowego `student` realizuje transport `local(8)` — **jeszcze nie LMTP**.
-- **Sieć**: Docker Compose `internal: true` ogranicza wyjście z sieci laboratorium; nie publikujemy portu 25. Laboratorium nadal ma dostęp do hosta przez narzędzia Docker, więc nie traktuj kontenerów jako granicy bezpieczeństwa dla nieufnego kodu.
-- **Wolumeny**: kolejki obu Postfixów (`queue-a`, `queue-b`) oraz skrzynka (`mailbox-b`) zachowują dane pomiędzy typowymi restartami kontenerów.
-- **Obrazy**: Debian 12 (`bookworm-slim`) i pakiet Postfix dystrybucji, nie gotowy „mail-server all-in-one”.
+- **mail-a**: the sending server. `relayhost = [mail-b]:25` routes messages for domains outside `mydestination` to `mail-b`. The square brackets disable MX lookups for the next hop.
+- **mail-b**: the receiving server. The domain `b.lab.test` belongs to `mydestination`. Messages for the local system user `student` are delivered using the `local(8)` transport — **not LMTP**.
+- **Network**: Docker Compose uses `internal: true` to restrict external connectivity. Port 25 is not published to the host. Docker access from the host still exists, so containers should not be considered a security boundary for untrusted code.
+- **Volumes**: separate named volumes preserve the queues of both Postfix instances (`queue-a`, `queue-b`) and the recipient's mailbox (`mailbox-b`) across normal container restarts.
+- **Images**: Debian 12 (`bookworm-slim`) with the distribution's Postfix package, rather than an all-in-one mail server image.
 
-## Struktura
+## Project structure
 
 ```text
 postfix-smtp-lab/
 ├── README.md
+├── README.pl.md
+├── LICENSE
 └── labs/
     └── 01-basic-smtp/
+        ├── README.md
+        ├── README.pl.md
         ├── compose.yaml
         ├── Dockerfile
-        ├── README.md
         └── config/
             ├── mail-a/main.cf
             └── mail-b/main.cf
 ```
 
-## Wymagania i uruchomienie
+## Requirements and quick start
 
-Docker Engine z pluginem `docker compose` oraz możliwość pobrania obrazu i pakietów **podczas budowania**. Sieć wewnętrzna dotyczy już działających serwisów, a nie pobierania zależności przy `docker compose build`.
+You need Docker Engine with the Docker Compose plugin and Internet access to download the base image and packages **during the build**.
+
+The internal Docker network applies to running containers, not to the image build process.
+
+From the repository root:
 
 ```bash
-docker compose config             # obejrzyj wyrenderowaną konfigurację
+cd labs/01-basic-smtp
+
+docker compose config
 docker compose up -d --build
-# po uruchomieniu:
 docker compose ps
+```
+
+Inspect the effective Postfix configuration:
+
+```bash
 docker compose exec mail-a postconf myhostname mydestination relayhost
 docker compose exec mail-b postconf myhostname mydestination default_transport
 ```
 
-Jeżeli `docker compose up` zgłosi problem z `maillog_file`, sprawdź wersję Postfixa (`docker compose exec mail-a postconf mail_version`) i logi kontenera. Wykorzystujemy obsługę logowania do stdout przy `postfix start-fg`; nie jest ona dostępna we wszystkich starszych wydaniach.
-
-## Eksperyment A: pojedyncza wiadomość
-
-Nadaj wiadomość z kontenera `mail-a` za pomocą lokalnego interfejsu `sendmail` Postfixa:
+If startup fails with an error related to `maillog_file`, check the Postfix version and container logs:
 
 ```bash
-printf 'From: tester@a.lab.test\nTo: student@b.lab.test\nSubject: Proba SMTP\n\nCzesc z mail-a.\n' \
-  | docker compose exec -T mail-a sendmail -i -f tester@a.lab.test student@b.lab.test
+docker compose exec mail-a postconf mail_version
+docker compose logs mail-a mail-b
 ```
 
-Zajrzyj do kolejki i logów:
+The laboratory relies on Postfix logging to standard output when running with `postfix start-fg`. This functionality may not be available in older Postfix releases.
+
+## Experiment A: Successful message delivery
+
+Send a message from `mail-a` using Postfix's local `sendmail` interface:
+
+```bash
+printf 'From: tester@a.lab.test\nTo: student@b.lab.test\nSubject: SMTP test\n\nHello from mail-a.\n' \
+  | docker compose exec -T mail-a sendmail -i \
+      -f tester@a.lab.test student@b.lab.test
+```
+
+Inspect both mail queues and the logs:
 
 ```bash
 docker compose exec mail-a postqueue -p
@@ -66,97 +93,276 @@ docker compose exec mail-b postqueue -p
 docker compose logs --tail=80 mail-a mail-b
 ```
 
-Odczytaj skrzynkę lokalnego odbiorcy:
+Read the recipient's local mailbox:
 
 ```bash
-docker compose exec mail-b sh -c 'ls -l /var/mail/student; tail -n 40 /var/mail/student'
+docker compose exec mail-b \
+  sh -c 'ls -l /var/mail/student; tail -n 40 /var/mail/student'
 ```
 
-**Pytanie:** kiedy `mail-a` usuwa wiadomość z kolejki? Szukaj `status=sent` po potwierdzeniu przyjęcia przez `mail-b`. Dalsze dostarczenie przez `mail-b` jest już jego odpowiedzialnością.
+### What should happen?
 
-## Eksperyment B: niedostępny serwer odbiorcy
+The sending server delivers the message to `mail-b` over SMTP. The receiving server accepts it and delivers it to `/var/mail/student`.
 
-Zatrzymaj `mail-b`, **potem** nadaj kolejną wiadomość z `mail-a`:
+A successful transfer was observed in our laboratory:
+
+```text
+mail-a:
+E25FAA2C41: to=<student@b.lab.test>,
+relay=mail-b[172.12.3.3]:25,
+dsn=2.0.0, status=sent
+(250 2.0.0 Ok: queued as ECEC88ED85)
+```
+
+The sender then removes the message from its queue:
+
+```text
+E25FAA2C41: removed
+```
+
+On `mail-b`:
+
+```text
+ECEC88ED85: to=<student@b.lab.test>,
+relay=local, dsn=2.0.0,
+status=sent (delivered to mailbox)
+```
+
+Queue IDs and container IP addresses will differ between runs.
+
+Notice that each server assigns its own **queue ID**:
+
+```text
+mail-a: E25FAA2C41
+mail-b: ECEC88ED85
+```
+
+However, both servers retain the same message header:
+
+```text
+Message-ID: <20261019135009.E25FAA2C41@mail-a.a.lab.test>
+```
+
+**Question:** When does `mail-a` remove the message from its queue?
+
+Look for `status=sent` and the successful SMTP response from `mail-b`.
+
+A successful transfer to the next SMTP server does **not necessarily mean final delivery to the recipient's mailbox**. In this experiment, final delivery is confirmed separately by the `local(8)` delivery log on `mail-b`.
+
+## Experiment B: Destination server unavailable
+
+Stop the receiving server **before** sending another message:
 
 ```bash
 docker compose stop mail-b
-printf 'From: tester@a.lab.test\nTo: student@b.lab.test\nSubject: Odbiorca offline\n\nTa wiadomosc ma poczekac.\n' \
-  | docker compose exec -T mail-a sendmail -i -f tester@a.lab.test student@b.lab.test
 
+printf 'From: tester@a.lab.test\nTo: student@b.lab.test\nSubject: Destination offline\n\nThis message should wait.\n' \
+  | docker compose exec -T mail-a sendmail -i \
+      -f tester@a.lab.test student@b.lab.test
+```
+
+Inspect the sender's queue and logs:
+
+```bash
 docker compose exec mail-a postqueue -p
 docker compose logs --tail=80 mail-a
 ```
 
-**Oczekiwane:** `mail-a` nie otrzyma potwierdzenia SMTP od `mail-b`, więc przechowuje wiadomość w swojej kolejce (`deferred` po nieudanej próbie). Odczekaj chwilę, jeśli kolejka początkowo wygląda inaczej.
+### Expected behavior
 
-Włącz odbiorcę i przyspiesz ponowienie:
+Because `mail-b` is unavailable, `mail-a` cannot complete the SMTP delivery.
+
+After an unsuccessful delivery attempt, Postfix keeps the message in its queue and defers delivery.
+
+Depending on the Docker network state, the failure may appear as a DNS lookup problem or a connection error.
+
+If the queue initially shows a different state, wait briefly and inspect the logs again.
+
+Restore the receiving server:
 
 ```bash
 docker compose start mail-b
-docker compose exec mail-a postqueue -f
-docker compose logs --tail=80 mail-a mail-b
-docker compose exec mail-b sh -c 'tail -n 40 /var/mail/student'
 ```
 
-`postqueue -f` wymusza próbę doręczenia, nie zmienia konfiguracji. **Nie wykonuj takiego eksperymentu na produkcyjnym serwerze.**
-
-## Eksperyment C: nieistniejący odbiorca
-
-Wyślij na `nie-ma@b.lab.test`. `mail-b` powinien odpowiedzieć trwałą odmową dla nieznanego lokalnego odbiorcy, o ile domyślne mapowanie lokalnych kont pozostaje aktywne. Zobacz różnicę między odrzuceniem odbiorcy (`5xx`) a tymczasową niedostępnością (`4xx` / brak połączenia). Możesz obejrzeć ewentualną wiadomość zwrotną w kolejce/narzędziach lokalnych `mail-a`.
-
-## Najważniejsze pojęcia
-
-| Element | Rola |
-| --- | --- |
-| `smtpd` | Odbiera rozmowę SMTP na porcie 25. |
-| `cleanup` | Przygotowuje przyjętą wiadomość do kolejki. |
-| `qmgr` | Zarządza dostarczeniem wiadomości z kolejki. |
-| `smtp(8)` | Klient Postfixa łączący się z drugim serwerem. |
-| `local(8)` | Końcowe doręczenie do lokalnej skrzynki na `mail-b`. |
-| `relayhost` | Jawnie skonfigurowany następny serwer SMTP. |
-| `deferred` | Kolejka dla doręczeń odroczonych po nieudanych próbach. |
-
-**Zasada odpowiedzialności:** po udanym przyjęciu `DATA` i odpowiedzi `250` dany serwer przejmuje odpowiedzialność za wiadomość. Jeśli nadawca nie otrzyma odpowiedzi, może ponowić próbę, co czasem prowadzi do duplikatów.
-
-## Ograniczenia i dalsze lekcje
-
-- W tej wersji **nie ma DNS/MX** — routing do `mail-b` jest statyczny i celowo uproszczony.
-- Nie ma jeszcze **Dovecota ani LMTP**; dodamy je w kolejnej lekcji, gdy zrozumiemy ścieżkę Postfix → Postfix.
-- Brak TLS oraz SMTP AUTH — laboratorium nie jest publicznym serwerem pocztowym.
-- Nie włączaj na tym etapie publicznego przekierowania portu 25 ani `network_mode: host`.
-- Następne kroki: `450` kontra `550`, retry/backoff, kontrolowana awaria doręczenia lokalnego, Dovecot/LMTP, DNS/MX, następnie TLS/SASL.
-
-## Zatrzymanie i sprzątanie
+Request another delivery attempt:
 
 ```bash
-docker compose down          # kontenery i sieć, bez usuwania wolumenów
-docker compose down -v       # UWAGA: usuwa również kolejki i wiadomości!
+docker compose exec mail-a postqueue -f
 ```
 
-Nie używaj `down -v`, gdy chcesz zachować wyniki eksperymentów.
+Verify the result:
 
-## Eksperymenty z kolejką Postfixa
+```bash
+docker compose logs --tail=80 mail-a mail-b
 
-Podczas testów wywołaliśmy kilka różnych awarii dostarczania wiadomości. W każdym przypadku wiadomość pozostała w kolejce nadawcy, ale przyczyna niepowodzenia była inna.
+docker compose exec mail-b \
+  sh -c 'tail -n 40 /var/mail/student'
+```
 
-| Scenariusz | DSN | Stan kolejki |
+`postqueue -f` requests a queue flush. It does not modify the Postfix configuration or guarantee delivery if the underlying problem remains.
+
+**Do not reproduce these failure experiments on a production mail server.**
+
+## Experiment C: Unknown recipient
+
+This time, send a message to an address that does not correspond to a local user on `mail-b`:
+
+```bash
+printf 'From: tester@a.lab.test\nTo: unknown@b.lab.test\nSubject: Unknown recipient\n\nTesting permanent rejection.\n' \
+  | docker compose exec -T mail-a sendmail -i \
+      -f tester@a.lab.test unknown@b.lab.test
+```
+
+Inspect the logs:
+
+```bash
+docker compose logs --tail=80 mail-a mail-b
+docker compose exec mail-a postqueue -p
+```
+
+With the default local recipient validation enabled, `mail-b` should reject the unknown recipient with a permanent SMTP error, typically `550 5.1.1`.
+
+This illustrates the difference between:
+
+- A **temporary failure** (`4xx`), where delivery may be retried.
+- A **permanent rejection** (`5xx`), where retrying the same delivery without fixing the cause is generally not appropriate.
+
+The original message is submitted locally to `mail-a`, so the initial `sendmail` command can succeed even though remote delivery later fails.
+
+Postfix may generate a delivery status notification (bounce). Such a notification can itself be queued, so inspect the logs and queue instead of assuming that it has reached the sender's mailbox.
+
+## Observed queue failures
+
+During development, we deliberately triggered several delivery failures.
+
+| Scenario | Observed DSN | Delivery status |
 |---|---|---|
-| Niedostępna nazwa DNS `mail-b` | `4.4.3` | `deferred` |
-| Tymczasowy błąd odbiorcy `451` | `4.3.0` | `deferred` |
-| Odmowa połączenia TCP/25 | `4.4.1` | `deferred` |
-| Przywrócenie odbiorcy i skuteczne przekazanie | `2.0.0` | `sent` |
+| DNS lookup failure for `mail-b` | `4.4.3` | `deferred` |
+| Temporary receiver failure (`451`) | `4.3.0` | `deferred` |
+| TCP connection refused on port 25 | `4.4.1` | `deferred` |
+| Receiver restored; message accepted | `2.0.0` | `sent` |
 
-**Wniosek:** `deferred` oznacza odroczone doręczenie, ale nie wyjaśnia, dlaczego wiadomość nie została dostarczona.
+These are observations from separate experiments. Not every failure mode can be reproduced simply by stopping the receiver container.
 
-Przyczyny szukamy w kodzie DSN i komunikacie diagnostycznym z logów.
+### How should we interpret these results?
 
-Przykładowo:
+- `4.4.3` — a directory system or DNS-related failure.
+- `4.3.0` — a temporary mail system problem.
+- `4.4.1` — a problem establishing the network connection.
+- `2.0.0` — successful completion.
 
-- `4.4.3` — problem z systemem katalogowym lub DNS.
-- `4.3.0` — tymczasowy problem systemu pocztowego.
-- `4.4.1` — problem z nawiązaniem połączenia.
-- `2.0.0` — operacja zakończona pomyślnie.
+**The important lesson: `deferred` is a delivery state, not a diagnosis.**
 
-Po skutecznym przekazaniu wiadomości do następnego serwera Postfix usuwa ją ze swojej aktywnej kolejki. Odpowiedzialność za dalsze doręczenie przejmuje odbiorca SMTP.
+Different failures can result in the same `deferred` state.
 
-**Uwaga:** wynik `sent` na `mail-a` oznacza skuteczne przekazanie wiadomości do `mail-b`, a niekoniecznie jej ostateczne dostarczenie do skrzynki użytkownika.
+To determine the cause, inspect the diagnostic message and DSN recorded by Postfix.
+
+Also remember that a DSN in a Postfix log is not always a code received directly from a remote SMTP server. Postfix can generate its own diagnostic status when, for example, the TCP connection cannot be established.
+
+## Key concepts
+
+| Component | Purpose |
+|---|---|
+| `smtpd` | Accepts incoming SMTP connections. |
+| `pickup` | Collects locally submitted messages. |
+| `cleanup` | Processes messages before queueing. |
+| `qmgr` | Manages queued messages and delivery scheduling. |
+| `smtp(8)` | SMTP client responsible for sending to the next server. |
+| `local(8)` | Delivers messages to local mailboxes. |
+| `relayhost` | Specifies an explicit next-hop SMTP server. |
+| `deferred` | Indicates that delivery has been postponed. |
+| Queue ID | Identifies a queued message within a Postfix instance. |
+| Message-ID | Message header used to identify a message across systems; it is not necessarily unique or trustworthy. |
+
+### When does responsibility transfer?
+
+After the receiving SMTP server successfully accepts the message and returns its final `250` response following `DATA`, it assumes responsibility for further handling.
+
+The sender can then remove its queued copy.
+
+If the receiver accepts the message but the connection fails before the sender receives the acknowledgement, the sender may retry.
+
+This is one reason why duplicate email delivery is possible.
+
+## Troubleshooting
+
+Inspect the queues:
+
+```bash
+docker compose exec mail-a postqueue -p
+docker compose exec mail-b postqueue -p
+```
+
+Inspect recent logs:
+
+```bash
+docker compose logs --tail=100 mail-a mail-b
+```
+
+Check the effective configuration:
+
+```bash
+docker compose exec mail-a postconf -n
+docker compose exec mail-b postconf -n
+```
+
+Inspect a queued message if you know its queue ID:
+
+```bash
+docker compose exec mail-a postcat -q QUEUE_ID
+```
+
+Replace `QUEUE_ID` with an actual identifier from that server's queue.
+
+When investigating a delivery failure, ask:
+
+1. Did Postfix accept the message?
+2. Was the message placed in the queue?
+3. Did the SMTP client attempt delivery?
+4. Did the remote server respond, or did the connection fail?
+5. Was delivery postponed, permanently rejected, or successful?
+6. Did the next server merely accept the message, or was it delivered to the final mailbox?
+
+## Limitations and future lessons
+
+This laboratory intentionally excludes several production mail features:
+
+- No external DNS/MX-based routing. The next hop is explicitly configured as `[mail-b]:25`, although Docker's internal DNS resolves the container name.
+- No Dovecot or LMTP.
+- No TLS or SMTP authentication.
+- No anti-spam processing or public SMTP service.
+- No host network mode or published SMTP ports.
+
+Do not expose these containers directly to the Internet.
+
+Possible future lessons include temporary versus permanent failures, retry scheduling and backoff, local delivery failures, Dovecot/LMTP, DNS/MX, and TLS/SASL.
+
+These are ideas for future exercises, not requirements for running this lab.
+
+## Further reading
+
+- [Postfix mail queues and delivery failures — Logos (Polish)](https://logos.net.pl/pl/blog/postfix-smtp-kolejka-bledy-dostarczania/)
+- [Understanding SMTP reply codes and enhanced status codes — Logos (Polish)](https://logos.net.pl/pl/blog/kody-bledow-smtp-jak-czytac-i-diagnozowac/)
+- [Postfix documentation](https://www.postfix.org/documentation.html)
+- [RFC 5321 — Simple Mail Transfer Protocol](https://www.rfc-editor.org/rfc/rfc5321.html)
+- [RFC 3463 — Enhanced Mail System Status Codes](https://www.rfc-editor.org/rfc/rfc3463.html)
+
+## Stopping and cleaning up
+
+Stop the containers and remove the lab network:
+
+```bash
+docker compose down
+```
+
+Named volumes are preserved.
+
+To remove containers, networks, and named volumes:
+
+```bash
+docker compose down -v
+```
+
+**Warning:** `down -v` also deletes the lab's stored messages and mail queues.
+
+Do not use it if you want to preserve your experiment results.

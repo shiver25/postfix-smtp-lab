@@ -1,3 +1,5 @@
+[English](README.md) | [Polski](README.pl.md)
+
 # Postfix SMTP Lab
 
 A collection of hands-on laboratories for learning how Postfix and SMTP actually work.
@@ -67,4 +69,10 @@ Do not expose the lab containers directly to the Internet.
 
 ## License
 
-License information will be added before publication.
+This project is licensed under the MIT License.
+See [LICENSE](LICENSE) for details.
+
+## Further reading
+
+- [Postfix mail queues and delivery failures](https://logos.net.pl/pl/blog/postfix-smtp-kolejka-bledy-dostarczania/)
+- [Understanding SMTP reply codes and enhanced status codes](https://logos.net.pl/pl/blog/kody-bledow-smtp-jak-czytac-i-diagnozowac/)
