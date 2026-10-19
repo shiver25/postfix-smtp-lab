@@ -1,0 +1,39 @@
+name: postfix-lab-01-basic-smtp
+
+services:
+  mail-a:
+    build:
+      context: .
+      args:
+        MAIL_NODE: a
+    hostname: mail-a
+    domainname: a.lab.test
+    networks:
+      - mail-lab
+    volumes:
+      - queue-a:/var/spool/postfix
+    restart: "no"
+
+  mail-b:
+    build:
+      context: .
+      args:
+        MAIL_NODE: b
+    hostname: mail-b
+    domainname: b.lab.test
+    networks:
+      - mail-lab
+    volumes:
+      - queue-b:/var/spool/postfix
+      - mailbox-b:/var/mail
+    restart: "no"
+
+networks:
+  mail-lab:
+    internal: true
+
+volumes:
+  queue-a:
+  queue-b:
+  mailbox-b:
+

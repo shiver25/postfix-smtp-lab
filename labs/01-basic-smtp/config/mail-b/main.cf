@@ -1,0 +1,14 @@
+# mail-b: recipient. Local UNIX account 'student' exists in Docker image.
+compatibility_level = 3.6
+myhostname = mail-b.b.lab.test
+mydomain = b.lab.test
+myorigin = $mydomain
+mydestination = $myhostname, localhost.$mydomain, localhost, $mydomain
+inet_interfaces = all
+inet_protocols = ipv4
+mynetworks = 127.0.0.0/8
+smtpd_relay_restrictions = permit_mynetworks, reject_unauth_destination
+# Do not route nonlocal messages anywhere (lab only).
+default_transport = error:Nonlocal delivery is disabled in this lab
+maillog_file = /dev/stdout
+alias_maps = hash:/etc/aliases

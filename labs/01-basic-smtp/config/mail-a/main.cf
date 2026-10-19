@@ -1,0 +1,18 @@
+# mail-a: sender. All nonlocal delivery goes ONLY to mail-b.
+compatibility_level = 3.6
+myhostname = mail-a.a.lab.test
+mydomain = a.lab.test
+myorigin = $mydomain
+mydestination = $myhostname, localhost.$mydomain, localhost, $mydomain
+inet_interfaces = all
+inet_protocols = ipv4
+mynetworks = 127.0.0.0/8
+smtpd_relay_restrictions = permit_mynetworks, reject_unauth_destination
+# A fixed next hop: no need for public DNS MX records in lesson 1.
+relayhost = [mail-b]:25
+# Lab-only: Postfix's built-in logging when running in foreground.
+maillog_file = /dev/stdout
+# Keep queue experiment human-friendly.
+queue_run_delay = 60s
+minimal_backoff_time = 60s
+maximal_backoff_time = 300s
