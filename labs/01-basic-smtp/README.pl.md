@@ -232,6 +232,183 @@ Wiadomość jest przekazywana lokalnie do `mail-a`, dlatego początkowe poleceni
 
 Postfix może wygenerować raport o niedostarczeniu wiadomości (*bounce*, DSN). Taki raport również może trafić do kolejki, dlatego sprawdź logi zamiast zakładać, że informacja dotarła już do nadawcy.
 
+## Eksperyment D: jedna wiadomość, dwóch odbiorców i bounce
+
+Dotychczas wysyłaliśmy wiadomości do jednego odbiorcy. Sprawdźmy teraz, co się wydarzy, gdy **jedna wiadomość będzie miała dwóch odbiorców**, a jeden z nich nie istnieje.
+
+Przy okazji zobaczymy, jak Postfix generuje raport o niedostarczeniu (*bounce*) i co się dzieje, gdy również tego raportu nie można dostarczyć.
+
+Pierwszą część eksperymentu można powtórzyć na aktualnej konfiguracji laboratorium. Dalsza część dokumentuje problem z NIS, który wystąpił podczas jego przygotowywania.
+
+### Krok 1. Wyślij wiadomość do dwóch odbiorców
+
+Upewnij się, że `mail-b` działa:
+
+```bash
+docker compose start mail-b
+```
+
+Wyślij jedną wiadomość do dwóch odbiorców:
+
+```bash
+printf 'From: tester@a.lab.test\nTo: student@b.lab.test, unknown@b.lab.test\nSubject: One message two recipients\n\nTesting multiple recipients.\n' \
+  | docker compose exec -T mail-a sendmail -i \
+      -f tester@a.lab.test \
+      student@b.lab.test unknown@b.lab.test
+```
+
+Sprawdź logi:
+
+```bash
+docker compose logs --tail=80 mail-a mail-b
+```
+
+### Krok 2. Jeden Queue ID, dwa wyniki dostarczenia
+
+W naszym eksperymencie `mail-a` przyjął wiadomość z dwoma odbiorcami:
+
+```text
+78A70A2C4A: from=<tester@a.lab.test>, size=354, nrcpt=2 (queue active)
+```
+
+Następnie otrzymał dwa różne wyniki:
+
+```text
+78A70A2C4A: to=<unknown@b.lab.test>,
+dsn=5.1.1, status=bounced
+
+78A70A2C4A: to=<student@b.lab.test>,
+dsn=2.0.0, status=sent
+```
+
+Pierwszy odbiorca nie istnieje. `mail-b` odrzucił go odpowiedzią:
+
+```text
+550 5.1.1 Recipient address rejected:
+User unknown in local recipient table
+```
+
+Odmowa nastąpiła podczas polecenia SMTP `RCPT TO`, przed przekazaniem treści wiadomości.
+
+Drugi odbiorca został zaakceptowany, a `mail-b` nadał otrzymanej wiadomości własny Queue ID:
+
+```text
+824A28ED83: from=<tester@a.lab.test>,
+size=535, nrcpt=1 (queue active)
+```
+
+Następnie dostarczył wiadomość lokalnie:
+
+```text
+824A28ED83: to=<student@b.lab.test>,
+relay=local, dsn=2.0.0,
+status=sent (delivered to mailbox)
+```
+
+**Wniosek:** Queue ID na `mail-a` identyfikuje wiadomość z dwoma odbiorcami, ale Postfix śledzi wynik doręczenia osobno dla każdego odbiorcy.
+
+### Krok 3. Postfix generuje raport o niedostarczeniu
+
+Ponieważ jeden z odbiorców został trwale odrzucony, `mail-a` wygenerował raport DSN:
+
+```text
+78A70A2C4A: sender non-delivery notification: 84D34A2C52
+```
+
+Powstała nowa wiadomość z własnym Queue ID:
+
+```text
+84D34A2C52: from=<>, size=2461, nrcpt=1 (queue active)
+```
+
+Zwróć uwagę na `from=<>`.
+
+**Raport DSN ma pustego nadawcę kopertowego.** Dzięki temu nieudane dostarczenie raportu nie spowoduje generowania kolejnych raportów o błędach, które mogłyby utworzyć nieskończoną pętlę.
+
+### Krok 4. Raport DSN również może trafić do `deferred`
+
+Podczas przygotowywania laboratorium na `mail-a` mieliśmy domyślne ustawienie:
+
+```ini
+alias_maps = hash:/etc/aliases, nis:mail.aliases
+```
+
+Kontener nie korzystał jednak z NIS.
+
+Przy próbie lokalnego doręczenia raportu DSN Postfix zgłosił:
+
+```text
+84D34A2C52: to=<tester@a.lab.test>,
+relay=local, dsn=4.3.0,
+status=deferred (alias database unavailable)
+```
+
+Wiadomość pierwotna została już obsłużona i usunięta z kolejki. W `deferred` pozostała **nowa wiadomość — raport DSN**.
+
+To ważne rozróżnienie podczas analizowania `mailq`.
+
+### Krok 5. Usunięcie błędu konfiguracji i ponowienie dostarczenia
+
+W `config/mail-a/main.cf` ograniczyliśmy mapowanie aliasów do lokalnego pliku:
+
+```ini
+alias_maps = hash:/etc/aliases
+```
+
+Następnie przebudowaliśmy kontener:
+
+```bash
+docker compose up -d --build --no-deps mail-a
+```
+
+Sprawdziliśmy konfigurację:
+
+```bash
+docker compose exec mail-a postconf alias_maps
+```
+
+Wynik:
+
+```text
+alias_maps = hash:/etc/aliases
+```
+
+Kolejka została zachowana, ponieważ `/var/spool/postfix` znajduje się na nazwanym wolumenie Dockera.
+
+Po uruchomieniu Postfixa i ponownej próbie dostarczenia w logach pojawiło się:
+
+```bash
+docker compose exec mail-a postqueue -f
+docker compose logs --tail=40 mail-a
+```
+
+otrzymaliśmy:
+
+```text
+84D34A2C52: to=<tester@a.lab.test>,
+relay=local, dsn=5.1.1,
+status=bounced (unknown user: "tester")
+
+84D34A2C52: removed
+```
+
+Tym razem problem z bazą aliasów został rozwiązany, ale ujawniła się inna przyczyna: na `mail-a` nie istnieje lokalny użytkownik `tester`.
+
+Ponieważ niedostarczona wiadomość sama była raportem DSN z pustym nadawcą kopertowym, Postfix nie wygenerował kolejnego bounce'a.
+
+### Wnioski
+
+Z jednego eksperymentu wynikają cztery ważne obserwacje:
+
+1. Jedna wiadomość w kolejce może mieć wielu odbiorców.
+2. Każdy odbiorca może mieć inny wynik dostarczenia.
+3. Raport o niedostarczeniu jest osobną wiadomością z własnym Queue ID.
+4. Raport DSN również może trafić do `deferred`, a jego niedostarczenie nie powoduje generowania kolejnego raportu DSN.
+
+**Ważne:** ten eksperyment pokazuje częściowy sukces i trwałe odrzucenie wiadomości. Nie pokazuje jeszcze sytuacji, w której jeden odbiorca otrzymał wiadomość, a drugi nadal oczekuje w `deferred`. To wymaga osobnego testu z kontrolowanym błędem tymczasowym.
+
+W aktualnej wersji laboratorium `mail-a` ma już poprawione `alias_maps`, dlatego nowy użytkownik nie odtworzy historycznego błędu NIS bez świadomego przywrócenia starej konfiguracji. Nie jest to konieczne do wykonania podstawowego eksperymentu.
+
 ## Zaobserwowane błędy dostarczania
 
 Podczas przygotowywania laboratorium celowo wywołaliśmy kilka rodzajów awarii.

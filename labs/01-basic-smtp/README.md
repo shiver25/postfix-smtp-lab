@@ -231,6 +231,185 @@ The original message is submitted locally to `mail-a`, so the initial `sendmail`
 
 Postfix may generate a delivery status notification (bounce). Such a notification can itself be queued, so inspect the logs and queue instead of assuming that it has reached the sender's mailbox.
 
+## Experiment D: One Message, Two Recipients, and a Bounce
+
+So far, we have sent messages to a single recipient. Let's see what happens when **one message has two recipients**, but one of them does not exist.
+
+We will also examine how Postfix generates a delivery failure notification (*bounce*) and what happens when that notification cannot be delivered either.
+
+The first part of this experiment can be reproduced with the current lab configuration. The remaining steps document a NIS-related configuration problem encountered during development.
+
+### Step 1: Send a message to two recipients
+
+Make sure `mail-b` is running:
+
+```bash
+docker compose start mail-b
+```
+
+Submit one message with two envelope recipients:
+
+```bash
+printf 'From: tester@a.lab.test\nTo: student@b.lab.test, unknown@b.lab.test\nSubject: One message two recipients\n\nTesting multiple recipients.\n' \
+  | docker compose exec -T mail-a sendmail -i \
+      -f tester@a.lab.test \
+      student@b.lab.test unknown@b.lab.test
+```
+
+Inspect the logs:
+
+```bash
+docker compose logs --tail=80 mail-a mail-b
+```
+
+### Step 2: One Queue ID, Two Delivery Results
+
+In our experiment, `mail-a` accepted a single message with two recipients:
+
+```text
+78A70A2C4A: from=<tester@a.lab.test>, size=354, nrcpt=2 (queue active)
+```
+
+Postfix then recorded two different delivery results:
+
+```text
+78A70A2C4A: to=<unknown@b.lab.test>,
+dsn=5.1.1, status=bounced
+
+78A70A2C4A: to=<student@b.lab.test>,
+dsn=2.0.0, status=sent
+```
+
+The first recipient does not exist. `mail-b` rejected the address with:
+
+```text
+550 5.1.1 Recipient address rejected:
+User unknown in local recipient table
+```
+
+The rejection occurred during the SMTP `RCPT TO` command, before the message content was transferred.
+
+The second recipient was accepted. `mail-b` assigned its own Queue ID:
+
+```text
+824A28ED83: from=<tester@a.lab.test>,
+size=535, nrcpt=1 (queue active)
+```
+
+It then delivered the message to the local mailbox:
+
+```text
+824A28ED83: to=<student@b.lab.test>,
+relay=local, dsn=2.0.0,
+status=sent (delivered to mailbox)
+```
+
+**Conclusion:** A Queue ID on `mail-a` identifies a message that may have multiple recipients. Postfix tracks the delivery result for each recipient separately.
+
+### Step 3: Postfix Generates a Bounce
+
+Because one recipient was permanently rejected, `mail-a` generated a delivery status notification (DSN):
+
+```text
+78A70A2C4A: sender non-delivery notification: 84D34A2C52
+```
+
+This created a new message with its own Queue ID:
+
+```text
+84D34A2C52: from=<>, size=2461, nrcpt=1 (queue active)
+```
+
+Notice `from=<>`.
+
+**Delivery status notifications use an empty envelope sender.** This prevents an undeliverable bounce from generating another bounce, which could otherwise lead to an endless loop of delivery failure notifications.
+
+### Step 4: A Bounce Can Also Enter the Deferred Queue
+
+During development, `mail-a` initially used the default alias lookup configuration:
+
+```ini
+alias_maps = hash:/etc/aliases, nis:mail.aliases
+```
+
+However, the container did not have a working NIS service.
+
+When Postfix attempted to deliver the DSN locally, it reported:
+
+```text
+84D34A2C52: to=<tester@a.lab.test>,
+relay=local, dsn=4.3.0,
+status=deferred (alias database unavailable)
+```
+
+The original message had already been processed and removed from the queue.
+
+The message remaining in `deferred` was **a new message containing the delivery failure notification**, not the original email.
+
+This distinction is important when analyzing `mailq` output.
+
+### Step 5: Fixing the Configuration and Retrying Delivery
+
+We corrected the alias lookup configuration in `config/mail-a/main.cf`:
+
+```ini
+alias_maps = hash:/etc/aliases
+```
+
+Then rebuilt the sending container:
+
+```bash
+docker compose up -d --build --no-deps mail-a
+```
+
+We verified the effective configuration:
+
+```bash
+docker compose exec mail-a postconf alias_maps
+```
+
+Result:
+
+```text
+alias_maps = hash:/etc/aliases
+```
+
+The queue contents survived the rebuild because `/var/spool/postfix` is stored in a named Docker volume.
+
+After Postfix restarted and another delivery attempt occurred, we inspected the logs. A queue flush can be requested with:
+
+```bash
+docker compose exec mail-a postqueue -f
+docker compose logs --tail=40 mail-a
+```
+
+The logs showed:
+
+```text
+84D34A2C52: to=<tester@a.lab.test>,
+relay=local, dsn=5.1.1,
+status=bounced (unknown user: "tester")
+
+84D34A2C52: removed
+```
+
+The alias database problem was resolved, but another issue became visible: the local user `tester` did not exist on `mail-a`.
+
+Since the undeliverable message was itself a DSN with an empty envelope sender, Postfix did not generate another bounce.
+
+### Conclusions
+
+This experiment demonstrates four important behaviors:
+
+1. A single queued message can have multiple recipients.
+2. Different recipients can have different delivery results.
+3. A delivery failure notification is a separate message with its own Queue ID.
+4. A DSN can also enter the `deferred` queue, but failure to deliver a DSN does not generate another bounce.
+
+**Important:** This experiment demonstrates partial success and a permanent recipient rejection. It does not yet demonstrate a case where one recipient has received the message while another remains in `deferred`. That requires a separate test with a controlled temporary delivery failure.
+
+The current lab configuration already includes the corrected `alias_maps` setting. Therefore, users following these instructions will not encounter the historical NIS error unless they deliberately restore the old configuration. Reproducing that error is not required for the main experiment.
+
 ## Observed queue failures
 
 During development, we deliberately triggered several delivery failures.

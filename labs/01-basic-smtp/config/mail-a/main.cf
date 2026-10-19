@@ -16,3 +16,4 @@ maillog_file = /dev/stdout
 queue_run_delay = 60s
 minimal_backoff_time = 60s
 maximal_backoff_time = 300s
+alias_maps = hash:/etc/aliases
